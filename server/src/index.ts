@@ -1,22 +1,29 @@
 import "dotenv/config";
 import cors from "cors";
-import express from "express";
+import express, { type Request, type Response } from "express";
 import Stripe from "stripe";
 
+type ChargeType = "direct" | "destination" | "separate";
+
 const app = express();
-const port = process.env.PORT || 4242;
+const port = Number(process.env.PORT) || 4242;
 const clientUrl = process.env.CLIENT_URL || "http://localhost:5173";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+const stripeSecret = process.env.STRIPE_SECRET_KEY ?? "";
+const stripe = new Stripe(stripeSecret);
 
 const connectedA = process.env.STRIPE_CONNECTED_ACCOUNT_A;
 const connectedB = process.env.STRIPE_CONNECTED_ACCOUNT_B;
 
-const DEMO_AMOUNT_CENTS = 2000; // $20.00
-const PLATFORM_FEE_CENTS = 200; // $2.00 application fee on direct / destination
+const DEMO_AMOUNT_CENTS = 2000;
+const PLATFORM_FEE_CENTS = 200;
 
-function requireEnv() {
-  const missing = [];
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function requireEnv(): void {
+  const missing: string[] = [];
   if (!process.env.STRIPE_SECRET_KEY) missing.push("STRIPE_SECRET_KEY");
   if (!connectedA) missing.push("STRIPE_CONNECTED_ACCOUNT_A");
   if (!connectedB) missing.push("STRIPE_CONNECTED_ACCOUNT_B");
@@ -34,27 +41,29 @@ app.use(
   })
 );
 
-// Stripe webhooks need the raw body
 app.post(
   "/webhook",
   express.raw({ type: "application/json" }),
-  async (req, res) => {
+  async (req: Request, res: Response) => {
     const sig = req.headers["stripe-signature"];
     const secret = process.env.STRIPE_WEBHOOK_SECRET;
     if (!secret) {
       return res.status(400).send("STRIPE_WEBHOOK_SECRET not configured");
     }
+    if (!sig || Array.isArray(sig)) {
+      return res.status(400).send("Missing stripe-signature header");
+    }
 
-    let event;
+    let event: Stripe.Event;
     try {
       event = stripe.webhooks.constructEvent(req.body, sig, secret);
     } catch (err) {
-      console.error("Webhook signature verification failed.", err.message);
-      return res.status(400).send(`Webhook Error: ${err.message}`);
+      console.error("Webhook signature verification failed.", errorMessage(err));
+      return res.status(400).send(`Webhook Error: ${errorMessage(err)}`);
     }
 
     if (event.type === "checkout.session.completed") {
-      const session = event.data.object;
+      const session = event.data.object as Stripe.Checkout.Session;
       if (session.metadata?.charge_type === "separate") {
         try {
           await createSeparateTransfers(session);
@@ -81,7 +90,7 @@ app.get("/api/config", (_req, res) => {
   });
 });
 
-const lineItem = {
+const lineItem: Stripe.Checkout.SessionCreateParams.LineItem = {
   price_data: {
     currency: "usd",
     product_data: {
@@ -93,17 +102,13 @@ const lineItem = {
   quantity: 1,
 };
 
-function successCancelUrls(chargeType) {
+function successCancelUrls(chargeType: ChargeType) {
   return {
     success_url: `${clientUrl}/success?type=${chargeType}&session_id={CHECKOUT_SESSION_ID}`,
     cancel_url: `${clientUrl}/?canceled=${chargeType}`,
   };
 }
 
-/**
- * Direct charge: PaymentIntent / Checkout Session is created ON the connected account.
- * Customer pays the connected account; platform can take application_fee_amount.
- */
 app.post("/api/checkout/direct", async (_req, res) => {
   if (!connectedA) {
     return res.status(400).json({ error: "STRIPE_CONNECTED_ACCOUNT_A is not set" });
@@ -126,14 +131,10 @@ app.post("/api/checkout/direct", async (_req, res) => {
     res.json({ url: session.url, sessionId: session.id });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: errorMessage(err) });
   }
 });
 
-/**
- * Destination charge: Payment is created on the PLATFORM account.
- * Funds are automatically transferred to transfer_data.destination (one connected account).
- */
 app.post("/api/checkout/destination", async (_req, res) => {
   if (!connectedA) {
     return res.status(400).json({ error: "STRIPE_CONNECTED_ACCOUNT_A is not set" });
@@ -156,14 +157,10 @@ app.post("/api/checkout/destination", async (_req, res) => {
     res.json({ url: session.url, sessionId: session.id });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: errorMessage(err) });
   }
 });
 
-/**
- * Separate charges and transfers: Charge on platform only (no automatic transfer).
- * After payment succeeds, create Transfer objects to one or more connected accounts.
- */
 app.post("/api/checkout/separate", async (_req, res) => {
   if (!connectedA || !connectedB) {
     return res.status(400).json({
@@ -172,8 +169,8 @@ app.post("/api/checkout/separate", async (_req, res) => {
   }
 
   const transferGroup = `demo_${Date.now()}`;
-  const splitA = 1200; // $12 to seller A
-  const splitB = 600; // $6 to seller B (platform keeps remainder minus Stripe fees)
+  const splitA = 1200;
+  const splitB = 600;
 
   try {
     const session = await stripe.checkout.sessions.create({
@@ -204,12 +201,12 @@ app.post("/api/checkout/separate", async (_req, res) => {
     });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: errorMessage(err) });
   }
 });
 
-async function resolveChargeId(session) {
-  let paymentIntentId =
+async function resolveChargeId(session: Stripe.Checkout.Session) {
+  const paymentIntentId =
     typeof session.payment_intent === "string"
       ? session.payment_intent
       : session.payment_intent?.id;
@@ -228,11 +225,11 @@ async function resolveChargeId(session) {
     throw new Error("No charge on payment intent yet");
   }
 
-  return { paymentIntentId, chargeId };
+  return chargeId;
 }
 
-async function createSeparateTransfers(session) {
-  const { paymentIntentId, chargeId } = await resolveChargeId(session);
+async function createSeparateTransfers(session: Stripe.Checkout.Session) {
+  const chargeId = await resolveChargeId(session);
 
   const transferGroup = session.metadata?.transfer_group;
   const accountA = session.metadata?.split_a_account;
@@ -240,7 +237,7 @@ async function createSeparateTransfers(session) {
   const accountB = session.metadata?.split_b_account;
   const amountB = Number(session.metadata?.split_b_amount || 0);
 
-  if (!accountA || !accountB || !amountA || !amountB) {
+  if (!transferGroup || !accountA || !accountB || !amountA || !amountB) {
     throw new Error("Missing split metadata on session");
   }
 
@@ -263,9 +260,8 @@ async function createSeparateTransfers(session) {
   });
 }
 
-/** Fallback when webhooks are not configured: finalize transfers from the success page */
 app.post("/api/separate/finalize", async (req, res) => {
-  const { sessionId } = req.body;
+  const sessionId = req.body?.sessionId as string | undefined;
   if (!sessionId) {
     return res.status(400).json({ error: "sessionId required" });
   }
@@ -283,8 +279,13 @@ app.post("/api/separate/finalize", async (req, res) => {
       return res.status(400).json({ error: "Not a separate-charge session" });
     }
 
+    const transferGroup = session.metadata.transfer_group;
+    if (!transferGroup) {
+      return res.status(400).json({ error: "Missing transfer_group metadata" });
+    }
+
     const existing = await stripe.transfers.list({
-      transfer_group: session.metadata.transfer_group,
+      transfer_group: transferGroup,
       limit: 10,
     });
 
@@ -302,7 +303,7 @@ app.post("/api/separate/finalize", async (req, res) => {
     await createSeparateTransfers(session);
 
     const transfers = await stripe.transfers.list({
-      transfer_group: session.metadata.transfer_group,
+      transfer_group: transferGroup,
       limit: 10,
     });
 
@@ -316,7 +317,7 @@ app.post("/api/separate/finalize", async (req, res) => {
     });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: errorMessage(err) });
   }
 });
 
@@ -338,7 +339,7 @@ app.get("/api/session/:id", async (req, res) => {
       amount_total: session.amount_total,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: errorMessage(err) });
   }
 });
 

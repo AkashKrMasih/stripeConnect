@@ -1,22 +1,37 @@
 import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
+import type {
+  ChargeType,
+  FinalizeResponse,
+  SessionSummary,
+  TransferSummary,
+} from "./types";
+
+const LABELS: Record<ChargeType, string> = {
+  direct: "Direct charge (on connected account)",
+  destination: "Destination charge (platform → one account)",
+  separate: "Separate charge & transfers (platform → multiple accounts)",
+};
 
 export default function SuccessPage() {
   const [searchParams] = useSearchParams();
-  const type = searchParams.get("type");
+  const typeParam = searchParams.get("type");
+  const type = typeParam as ChargeType | null;
   const sessionId = searchParams.get("session_id");
-  const [session, setSession] = useState(null);
-  const [transfers, setTransfers] = useState(null);
-  const [error, setError] = useState(null);
+  const [session, setSession] = useState<SessionSummary | null>(null);
+  const [transfers, setTransfers] = useState<TransferSummary[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!sessionId) return;
     const typeQuery = type ? `?type=${encodeURIComponent(type)}` : "";
     fetch(`/api/session/${sessionId}${typeQuery}`)
       .then((r) => r.json())
-      .then(setSession)
-      .catch((e) => setError(e.message));
-  }, [sessionId]);
+      .then((data: SessionSummary) => setSession(data))
+      .catch((e: unknown) =>
+        setError(e instanceof Error ? e.message : String(e))
+      );
+  }, [sessionId, type]);
 
   useEffect(() => {
     if (type !== "separate" || !sessionId) return;
@@ -28,24 +43,23 @@ export default function SuccessPage() {
       body: JSON.stringify({ sessionId }),
     })
       .then((r) => r.json())
-      .then((data) => {
+      .then((data: FinalizeResponse) => {
         if (data.error) throw new Error(data.error);
-        setTransfers(data.transfers || []);
+        setTransfers(data.transfers ?? []);
       })
-      .catch((e) => setError(e.message));
+      .catch((e: unknown) =>
+        setError(e instanceof Error ? e.message : String(e))
+      );
   }, [type, sessionId, session?.payment_status]);
 
-  const labels = {
-    direct: "Direct charge (on connected account)",
-    destination: "Destination charge (platform → one account)",
-    separate: "Separate charge & transfers (platform → multiple accounts)",
-  };
+  const label =
+    type && type in LABELS ? LABELS[type as ChargeType] : "Checkout completed";
 
   return (
     <div className="container">
       <header>
         <h1>Payment successful</h1>
-        <p>{labels[type] || "Checkout completed"}.</p>
+        <p>{label}.</p>
       </header>
 
       {session && (

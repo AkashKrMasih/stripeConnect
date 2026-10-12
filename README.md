@@ -12,7 +12,7 @@ Basic full-stack example showing three [Stripe Connect](https://docs.stripe.com/
 
 1. [Stripe account](https://dashboard.stripe.com/register) in **test mode**
 2. At least **two** test [connected accounts](https://dashboard.stripe.com/test/connect/accounts/overview) (Express or Standard). Copy their IDs (`acct_...`).
-3. Node.js 18+
+3. Node.js 18+ (TypeScript for client and server)
 
 For direct charges, the connected account must be able to accept charges (complete Connect onboarding in test mode).
 
@@ -35,8 +35,9 @@ npm run dev
 ## Project layout
 
 ```
-server/index.js     Express routes for each Checkout flow + separate transfer finalization
-client/src/App.jsx  UI to start each demo checkout
+server/src/index.ts   Express routes for each Checkout flow + separate transfer finalization
+client/src/App.tsx    UI to start each demo checkout
+client/src/types.ts   Shared API response types (client-side)
 ```
 
 ### API endpoints

@@ -1,7 +1,15 @@
 import { useEffect, useState } from "react";
 import { useSearchParams, Link } from "react-router-dom";
+import type { ApiConfig, ChargeType, CheckoutResponse } from "./types";
 
-const CHARGE_TYPES = [
+const CHARGE_TYPES: {
+  id: ChargeType;
+  tag: string;
+  title: string;
+  description: string;
+  bullets: string[];
+  endpoint: string;
+}[] = [
   {
     id: "direct",
     tag: "Direct charge",
@@ -43,7 +51,7 @@ const CHARGE_TYPES = [
   },
 ];
 
-function formatUsd(cents) {
+function formatUsd(cents: number): string {
   return new Intl.NumberFormat("en-US", {
     style: "currency",
     currency: "USD",
@@ -53,18 +61,18 @@ function formatUsd(cents) {
 export default function App() {
   const [searchParams] = useSearchParams();
   const canceled = searchParams.get("canceled");
-  const [config, setConfig] = useState(null);
-  const [loading, setLoading] = useState(null);
-  const [error, setError] = useState(null);
+  const [config, setConfig] = useState<ApiConfig | null>(null);
+  const [loading, setLoading] = useState<ChargeType | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/config")
       .then((r) => r.json())
-      .then(setConfig)
-      .catch(() => setConfig({}));
+      .then((data: ApiConfig) => setConfig(data))
+      .catch(() => setConfig(null));
   }, []);
 
-  async function startCheckout(chargeType) {
+  async function startCheckout(chargeType: ChargeType) {
     const meta = CHARGE_TYPES.find((c) => c.id === chargeType);
     if (!meta) return;
 
@@ -73,7 +81,7 @@ export default function App() {
 
     try {
       const res = await fetch(meta.endpoint, { method: "POST" });
-      const data = await res.json();
+      const data = (await res.json()) as CheckoutResponse;
       if (!res.ok) throw new Error(data.error || "Checkout failed");
       if (data.url) {
         window.location.href = data.url;
@@ -81,7 +89,7 @@ export default function App() {
         throw new Error("No checkout URL returned");
       }
     } catch (e) {
-      setError(e.message);
+      setError(e instanceof Error ? e.message : String(e));
       setLoading(null);
     }
   }
@@ -96,8 +104,8 @@ export default function App() {
       <header>
         <h1>Stripe Connect charge patterns</h1>
         <p>
-          React frontend + Express backend using Stripe Checkout. Each button
-          starts a test payment demonstrating a different Connect flow.
+          React + TypeScript frontend and Express API using Stripe Checkout. Each
+          button starts a test payment demonstrating a different Connect flow.
         </p>
       </header>
 
@@ -111,13 +119,18 @@ export default function App() {
 
       {canceled && (
         <div className="env-banner" style={{ borderColor: "var(--border)" }}>
-          Checkout canceled ({canceled}).{" "}
-          <Link to="/">Try again</Link>
+          Checkout canceled ({canceled}). <Link to="/">Try again</Link>
         </div>
       )}
 
       {config && (
-        <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginBottom: "1.5rem" }}>
+        <p
+          style={{
+            color: "var(--muted)",
+            fontSize: "0.85rem",
+            marginBottom: "1.5rem",
+          }}
+        >
           Demo price: {formatUsd(config.demoAmountCents)} · Platform fee (direct &
           destination): {formatUsd(config.platformFeeCents)}
         </p>
